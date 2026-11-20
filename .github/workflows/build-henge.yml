@@ -1,1 +1,119 @@
+# .github/workflows/build-henge.yml
+#
+# Builds a Henge.ipa from your fork's main branch on a GitHub-hosted macOS
+# runner, no Mac needed. Free on a PUBLIC repo: public repos get unlimited
+# minutes on hosted runners, including macOS. On a private repo, macOS minutes
+# bill at 10x, so the free tier's ~2000 min/month is only ~200 macOS minutes.
+#
+# The IPA comes out unsigned with ad-hoc signing (package_ipa.sh's normal
+# output). SideStore/AltStore re-signs it with your certificate on install
+# and keeps the entitlements it can; increased-memory-limit only survives if
+# your certificate carries it, and Henge falls back to file-backed guest RAM
+# without it.
 
+name: Build Henge IPA
+
+# Manual only (Actions tab > Build Henge IPA > Run workflow): pushes to main don't build an IPA.
+on:
+  workflow_dispatch: {}
+
+env:
+  HUSK: ${{ github.workspace }}/Husk
+  IOS_DEPS: ${{ github.workspace }}/Husk/build/ios-arm64/sysroot
+
+jobs:
+  build:
+    runs-on: xcode-27
+    timeout-minutes: 120
+
+    steps:
+      - name: Check out Henge (this fork)
+        uses: actions/checkout@v4
+        with:
+          path: Henge
+
+      # The repo only holds this workflow file plus one *.zip of the Henge
+      # source at its root (no need to extract ~1000 files by hand before
+      # pushing). Unpack it here and flatten its one top-level folder so the
+      # rest of this workflow sees the same tree a normal checkout would.
+      - name: Unpack the Henge source zip
+        working-directory: Henge
+        shell: bash
+        run: |
+          set -euxo pipefail
+          shopt -s dotglob nullglob
+          zipfile=$(ls *.zip | head -1)
+          [ -n "$zipfile" ] || { echo "No *.zip found at the repo root."; exit 1; }
+          unzip -q "$zipfile" -d _src
+          srcdir=$(ls -d _src/*/ | head -1)
+          mv "$srcdir"* .
+          rm -rf _src "$zipfile"
+
+      - name: Check out Husk
+        uses: actions/checkout@v4
+        with:
+          repository: Leviidev/Husk
+          path: Husk
+
+      - name: Cache Husk's sources and prebuilt iOS pieces
+        uses: actions/cache@v4
+        with:
+          path: |
+            Husk/third_party/build
+            Husk/build
+          key: husk-ios-arm64-${{ hashFiles('Husk/scripts/build_ios.sh', 'Husk/scripts/fetch_sources.sh') }}
+
+      - name: Install build tools
+        run: |
+          set -euxo pipefail
+          brew install xcodegen meson ninja pkg-config
+          rustup target add aarch64-apple-ios || {
+            curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+            rustup target add aarch64-apple-ios
+          }
+
+      - name: Fetch Husk's third-party sources
+        working-directory: Husk
+        run: bash scripts/fetch_sources.sh
+
+      - name: Build the iOS libraries Henge needs
+        working-directory: Husk
+        run: bash scripts/build_ios.sh libffi glib libslirp
+
+      - name: Build Husk's on-device pairing library
+        working-directory: Husk
+        run: bash scripts/build_rppairing_ios.sh
+
+      - name: Copy prebuilt deps into Henge
+        working-directory: Henge
+        run: zsh ios/scripts/fetch_deps.sh
+
+      - name: Build the restore stack (libirecovery, usbmuxd, idevicerestore)
+        working-directory: Henge
+        run: zsh tools/build_ios_restore.sh
+
+      - name: Build the engine
+        working-directory: Henge
+        run: make ios-lib
+
+      - name: Package Henge.ipa
+        working-directory: Henge
+        run: zsh ios/scripts/package_ipa.sh
+
+      - name: Upload Henge.ipa
+        uses: actions/upload-artifact@v4
+        with:
+          name: Henge-ipa-${{ github.sha }}
+          path: /Users/runner/Desktop/Henge.ipa
+          if-no-files-found: error
+
+      - name: Package Henge.tipa
+        working-directory: Henge
+        run: zsh ios/scripts/package_ipa.sh --trollstore
+
+      - name: Upload Henge.tipa
+        uses: actions/upload-artifact@v4
+        with:
+          name: Henge-tipa-${{ github.sha }}
+          path: /Users/runner/Desktop/Henge.tipa
+          if-no-files-found: error
