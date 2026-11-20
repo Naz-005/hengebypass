@@ -34,8 +34,9 @@ jobs:
 
       # The repo only holds this workflow file plus one *.zip of the Henge
       # source at its root (no need to extract ~1000 files by hand before
-      # pushing). Unpack it here and flatten its one top-level folder so the
-      # rest of this workflow sees the same tree a normal checkout would.
+      # pushing). Unpack it here and merge it into the already-checked-out
+      # Henge folder so the rest of this workflow sees the same tree a
+      # normal checkout would.
       - name: Unpack the Henge source zip
         working-directory: Henge
         shell: bash
@@ -46,7 +47,7 @@ jobs:
           [ -n "$zipfile" ] || { echo "No *.zip found at the repo root."; exit 1; }
           unzip -q "$zipfile" -d _src
           srcdir=$(ls -d _src/*/ | head -1)
-          mv "$srcdir"* .
+          cp -a "$srcdir". .
           rm -rf _src "$zipfile"
 
       - name: Check out Husk
